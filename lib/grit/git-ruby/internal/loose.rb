@@ -29,17 +29,19 @@ module Grit
           begin
             return nil unless sha1[0...2] && sha1[2..39]
             path = @directory + '/' + sha1[0...2] + '/' + sha1[2..39]
-            get_raw_object(File.read(path))
+            get_raw_object(File.open(path))
           rescue Errno::ENOENT
             nil
           end
         end
 
-        def get_raw_object(buf)
-          if legacy_loose_object?(buf)
-            LegacyLooseRawObject.new(buf)
+        def get_raw_object(file)
+          if legacy_loose_object?(file)
+            LegacyLooseRawObject.new(file)
           else
-            LooseRawObject.new(buff)
+            buf = file.read
+            file.close
+            LooseRawObject.new(buf)
           end
         end
 
@@ -82,7 +84,9 @@ module Grit
           end
         end
 
-        def legacy_loose_object?(buf)
+        def legacy_loose_object?(file)
+          buf = file.read(2)
+          file.rewind
           word = (buf.getord(0) << 8) + buf.getord(1)
           buf.getord(0) == 0x78 && word % 31 == 0
         end
@@ -140,13 +144,14 @@ module Grit
       end
 
       class LegacyLooseRawObject < LooseRawObject
-        def initialize(buffer)
-          @buffer = buffer
+        def initialize(file)
+          @file = file
         end
 
         def lazy_source
-          check_buffer_size(@buffer)
-          content = Zlib::Inflate.inflate(@buffer)
+          buf = @file.read
+          check_buffer_size(buf)
+          content = Zlib::Inflate.inflate(buf)
           header, content = content.split(/\0/, 2)
           if !header || !content
             raise LooseObjectError, "invalid object header"
@@ -155,7 +160,7 @@ module Grit
           if !%w(blob tree commit tag).include?(type) || size !~ /^\d+$/
             raise LooseObjectError, "invalid object header"
           end
-          @buffer = nil
+          @file.close
           check_content_size RawObject.new(type.to_sym, content, size.to_i)
         end
       end
