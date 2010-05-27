@@ -73,8 +73,12 @@ module Grit
       raise NotImplemented, "abstract class"
     end
 
-    def raw_content
+    def raw_content(options = {})
       raise NotImplemented, "abstract class"
+    end
+
+    def size(options = {})
+      raw_content(options).size
     end
 
     def sha1
@@ -85,23 +89,28 @@ module Grit
   end
 
   class Blob < GitObject
-    attr_accessor :content
+    attr_writer :content
 
     def self.from_raw(rawobject, repository)
-      new(rawobject.content)
+      new(rawobject)
     end
 
-    def initialize(content, repository=nil)
-      @content = content
+    def initialize(rawobject, repository=nil)
+      @rawobject  = rawobject
       @repository = repository
+      @content    = nil
     end
 
     def type
       :blob
     end
 
-    def raw_content
-      @content
+    def content
+      @content ||= @rawobject.content
+    end
+
+    def raw_content(options = {})
+      content
     end
   end
 
@@ -112,7 +121,9 @@ module Grit
     S_IFDIR =  0040000
     S_IFGITLINK = 0160000
     attr_accessor :mode, :name, :sha1
+
     def initialize(mode, filename, sha1o)
+      @type = nil
       @mode = 0
       mode.each_byte do |i|
         @mode = (@mode << 3) | (i-'0'.getord(0))
@@ -124,23 +135,28 @@ module Grit
       end
     end
 
-    def type
-      case @mode & S_IFMT
-      when S_IFGITLINK
-        @type = :submodule
-      when S_IFLNK
-        @type = :link
-      when S_IFDIR
-        @type = :directory
-      when S_IFREG
-        @type = :file
-      else
-        raise RuntimeError, "unknown type for directory entry"
+    def size
+      case type
+        when :file then '0'.rjust(7)
+        else '-'
       end
     end
 
+    def type
+      @type ||= \
+        case @mode & S_IFMT
+        when S_IFGITLINK then :submodule
+        when S_IFLNK     then :link
+        when S_IFDIR     then :directory
+        when S_IFREG     then :file
+        else
+          raise RuntimeError, "unknown type for directory entry"
+        end
+    end
+
     def type=(type)
-      case @type
+      @type = nil
+      case type
       when :link
         @mode = (@mode & ~S_IFMT) | S_IFLNK
       when :directory
@@ -219,10 +235,14 @@ module Grit
       :tree
     end
 
-    def raw_content
+    def raw_content(options = {})
       # TODO: sort correctly
       #@entry.sort { |a,b| a.name <=> b.name }.
-      @entry.collect { |e| [[e.format_mode, e.format_type, e.sha1].join(' '), e.name].join("\t") }.join("\n")
+      @entry.collect do |e| 
+        values = [e.format_mode, e.format_type, e.sha1]
+        values << e.size if options[:l]
+        [values.join(" "), e.name].join("\t")
+      end.join("\n")
     end
 
     def actual_raw
@@ -274,7 +294,7 @@ module Grit
       :commit
     end
 
-    def raw_content
+    def raw_content(options = {})
       "tree %s\n%sauthor %s\ncommitter %s\n\n" % [
         @tree,
         @parent.collect { |i| "parent %s\n" % i }.join,
@@ -336,7 +356,7 @@ module Grit
       @message = message
     end
 
-    def raw_content
+    def raw_content(options = {})
       "object %s\ntype %s\ntag %s\ntagger %s\n\n" % \
         [@object, @type, @tag, @tagger] + @message
     end

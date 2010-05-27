@@ -76,7 +76,7 @@ module Grit
         # try packs
         packs.each do |pack|
           o = pack[sha1]
-          return pack[sha1] if o
+          return o if o
         end
 
         # try loose storage
@@ -151,8 +151,13 @@ module Grit
       end
 
       # returns the raw file contents of this sha
-      def cat_file(sha)
-        get_object_by_sha1(sha).raw_content
+      #
+      # sha - String SHA hash of the object.
+      # options - Extra hash options.  Behavior depends on the raw object type.
+      #           # Trees only
+      #           :l - Set to true to show object size of blobs
+      def cat_file(sha, options = {})
+        get_object_by_sha1(sha).raw_content(options)
       end
 
       # returns a 2-d hash of the tree
@@ -170,7 +175,11 @@ module Grit
       # if given a commit sha, it will print the tree of that commit
       # if given a path limiter array, it will limit the output to those
       # if asked for recrusive trees, will traverse trees
-      def ls_tree(sha, paths = [], recursive = false)
+      #
+      # options - Hash of ls-tree options:
+      #           :r - Set to true to recurse to sub trees.
+      #           :l - Set to true to show object size of blobs.
+      def ls_tree(sha, paths = [], options = {})
         if paths.size > 0
           # pathing
           part = []
@@ -179,11 +188,11 @@ module Grit
           end
           return part.join("\n")
         else
-          get_raw_tree(sha, recursive)
+          get_raw_tree(sha, options)
         end
       end
 
-      def get_raw_tree(sha, recursive = false)
+      def get_raw_tree(sha, options = {})
         o = get_raw_object_by_sha1(sha)
         if o.type == :commit
           tree = get_object_by_sha1(sha).tree
@@ -196,7 +205,7 @@ module Grit
           return nil
         end
 
-        recursive ? get_raw_trees(tree) : cat_file(tree)
+        options[:r] ? get_raw_trees(tree) : cat_file(tree, options)
       end
 
       # Grabs tree contents recursively,

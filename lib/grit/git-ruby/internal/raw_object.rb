@@ -21,15 +21,9 @@ module Grit
 
       OBJ_TYPES = [nil, :commit, :tree, :blob, :tag].freeze
 
-      class RawObject
-        attr_accessor :type, :content
-        def initialize(type, content)
-          @type = type
-          @content = content
-        end
-
+      class RawObject < Struct.new(:type, :content, :size)
         def sha1
-          Digest::SHA1.digest("%s %d\0" % [@type, @content.length] + @content)
+          Digest::SHA1.digest("%s %d\0" % [type, content.length] + content)
         end
       end
     end
