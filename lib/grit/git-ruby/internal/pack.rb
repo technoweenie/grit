@@ -22,6 +22,89 @@ module Grit
       class PackFormatError < StandardError
       end
 
+      class PackRawObject < RawObject
+        OBJ_OFS_DELTA = 6
+        OBJ_REF_DELTA = 7
+
+        attr_reader :raw_type, :offset, :obj_offset, :options
+        attr_writer :raw_type
+
+        attr_accessor :raw_type, :offset, :obj_offset
+
+        def self.scan(packfile, offset, options = {})
+          obj = new(packfile, offset, options)
+          obj.unpack_object_type
+          obj
+        end
+
+        def initialize(packfile, offset, options = {})
+          @content    = nil
+          @packfile   = packfile
+          @offset     = offset
+          @options    = options
+          @obj_offset = 0
+        end
+
+        def content
+          @content ||= begin
+            case @raw_type
+              when OBJ_OFS_DELTA, OBJ_REF_DELTA
+                raise 'delta?'
+                #puts type
+              when OBJ_COMMIT, OBJ_TREE, OBJ_BLOB, OBJ_TAG
+                unpack_compressed
+              else
+                raise PackFormatError, "invalid type #{type}"
+            end
+          end
+        end
+
+        def type
+          OBJ_TYPES[@raw_type]
+        end
+
+        def uncacheable?
+          @options[:caching] && !(@raw_type == OBJ_COMMIT || @raw_type == OBJ_TREE)
+        end
+
+        def unpack_object_type
+          @obj_offset = @offset
+          @packfile.seek(@offset)
+
+          c         = @packfile.read(1).getord(0)
+          size      = c & 0xf
+          @raw_type = (c >> 4) & 7
+          shift     = 4
+          @offset  += 1
+          while c & 0x80 != 0
+            c = @packfile.read(1).getord(0)
+            size    |= ((c & 0x7f) << shift)
+            shift   += 7
+            @offset += 1
+          end
+          self.size = size.to_i
+        end
+
+        def unpack_compressed
+          outdata = []
+          @packfile.seek(@offset)
+          zstr = Zlib::Inflate.new
+          while !@packfile.eof?
+            indata = @packfile.read(4096)
+            if indata.size == 0
+              raise PackFormatError, 'error reading pack data'
+            end
+            outdata << zstr.inflate(indata)
+          end
+          outdata = outdata.join
+          if outdata.size > size
+            raise PackFormatError, 'error reading pack data'
+          end
+          zstr.close
+          outdata
+        end
+      end
+
       class PackStorage
         OBJ_OFS_DELTA = 6
         OBJ_REF_DELTA = 7
@@ -84,10 +167,7 @@ module Grit
           @cache = {}
           with_packfile do |packfile|
             each_entry do |sha, offset|
-              data, type = unpack_object(packfile, offset, {:caching => true})
-              if data
-                @cache[sha] = RawObject.new(OBJ_TYPES[type], data)
-              end
+              @cache[sha] = unpack_raw_object(packfile, offset, :caching => true)
             end
           end
         end
@@ -239,41 +319,35 @@ module Grit
         def parse_object(offset)
           obj = nil
           with_packfile do |packfile|
-            data, type = unpack_object(packfile, offset)
-            obj = RawObject.new(OBJ_TYPES[type], data)
+            obj = unpack_raw_object(packfile, offset)
           end
           obj
         end
         protected :parse_object
 
+        def unpack_raw_object(packfile, offset, options = {})
+          data, type = unpack_object(packfile, offset, options)
+          RawObject.new(OBJ_TYPES[type], data)
+        end
+
         def unpack_object(packfile, offset, options = {})
-          obj_offset = offset
-          packfile.seek(offset)
+          pack_object = PackRawObject.scan(packfile, offset, options)
 
-          c = packfile.read(1).getord(0)
-          size = c & 0xf
-          type = (c >> 4) & 7
-          shift = 4
-          offset += 1
-          while c & 0x80 != 0
-            c = packfile.read(1).getord(0)
-            size |= ((c & 0x7f) << shift)
-            shift += 7
-            offset += 1
-          end
+          type, size, offset, obj_offset = pack_object.raw_type, pack_object.size, pack_object.offset, pack_object.obj_offset
 
-          return [false, false] if !(type == OBJ_COMMIT || type == OBJ_TREE) && options[:caching]
+          return [false, false] if pack_object.uncacheable?
 
-          case type
+          case pack_object.raw_type
           when OBJ_OFS_DELTA, OBJ_REF_DELTA
-            data, type = unpack_deltified(packfile, type, offset, obj_offset, size, options)
+            data, type = unpack_deltified(packfile, pack_object.raw_type, pack_object.offset, pack_object.obj_offset, pack_object.size, pack_object.options)
+            pack_object.raw_type = type
             #puts type
           when OBJ_COMMIT, OBJ_TREE, OBJ_BLOB, OBJ_TAG
-            data = unpack_compressed(offset, size)
+            data = pack_object.content
           else
             raise PackFormatError, "invalid type #{type}"
           end
-          [data, type]
+          [data, pack_object.raw_type]
         end
         private :unpack_object
 
@@ -302,28 +376,26 @@ module Grit
 
           return [false, false] if !(type == OBJ_COMMIT || type == OBJ_TREE) && options[:caching]
 
-          delta = unpack_compressed(offset, size)
+          delta = unpack_compressed(packfile, offset, size)
           [patch_delta(base, delta), type]
         end
         private :unpack_deltified
 
-        def unpack_compressed(offset, destsize)
+        def unpack_compressed(packfile, offset, destsize)
           outdata = ""
-          with_packfile do |packfile|
-            packfile.seek(offset)
-            zstr = Zlib::Inflate.new
-            while outdata.size < destsize
-              indata = packfile.read(4096)
-              if indata.size == 0
-                raise PackFormatError, 'error reading pack data'
-              end
-              outdata += zstr.inflate(indata)
-            end
-            if outdata.size > destsize
+          packfile.seek(offset)
+          zstr = Zlib::Inflate.new
+          while outdata.size < destsize
+            indata = packfile.read(4096)
+            if indata.size == 0
               raise PackFormatError, 'error reading pack data'
             end
-            zstr.close
+            outdata += zstr.inflate(indata)
           end
+          if outdata.size > destsize
+            raise PackFormatError, 'error reading pack data'
+          end
+          zstr.close
           outdata
         end
         private :unpack_compressed
