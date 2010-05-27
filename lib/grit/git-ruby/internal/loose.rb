@@ -36,28 +36,11 @@ module Grit
         end
 
         def get_raw_object(buf)
-          if buf.length < 2
-            raise LooseObjectError, "object file too small"
-          end
-
           if legacy_loose_object?(buf)
-            content = Zlib::Inflate.inflate(buf)
-            header, content = content.split(/\0/, 2)
-            if !header || !content
-              raise LooseObjectError, "invalid object header"
-            end
-            type, size = header.split(/ /, 2)
-            if !%w(blob tree commit tag).include?(type) || size !~ /^\d+$/
-              raise LooseObjectError, "invalid object header"
-            end
-            type = type.to_sym
-            size = size.to_i
+            LegacyLooseRawObject.new(buf)
           else
-            type, size, used = unpack_object_header_gently(buf)
-            content = Zlib::Inflate.inflate(buf[used..-1])
+            LooseRawObject.new(buff)
           end
-          raise LooseObjectError, "size mismatch" if content.length != size
-          return RawObject.new(type, content)
         end
 
         # currently, I'm using the legacy format because it's easier to do
@@ -99,7 +82,37 @@ module Grit
           end
         end
 
-        # private
+        def legacy_loose_object?(buf)
+          word = (buf.getord(0) << 8) + buf.getord(1)
+          buf.getord(0) == 0x78 && word % 31 == 0
+        end
+        private :legacy_loose_object?
+      end
+
+      class LooseRawObject < RawObject
+        lazy_reader :type, :content, :size
+
+        def initialize(buffer)
+          @buffer = buffer
+          self.type, self.size, @used = unpack_object_header_gently(@buffer)
+        end
+
+        def lazy_source
+          check_buffer_size(@buffer)
+          content = Zlib::Inflate.inflate(@buffer[@used..-1])
+          @buffer = nil
+          check_content_size RawObject.new(type, content, size)
+        end
+
+        def check_buffer_size(buf)
+          raise LooseObjectError, "object file too small" if buf.length < 2
+        end
+
+        def check_content_size(obj)
+          raise LooseObjectError, "size mismatch" if obj.content.length != obj.size
+          obj
+        end
+
         def unpack_object_header_gently(buf)
           used = 0
           c = buf.getord(used)
@@ -124,13 +137,27 @@ module Grit
           end
           return [type, size, used]
         end
-        private :unpack_object_header_gently
+      end
 
-        def legacy_loose_object?(buf)
-          word = (buf.getord(0) << 8) + buf.getord(1)
-          buf.getord(0) == 0x78 && word % 31 == 0
+      class LegacyLooseRawObject < LooseRawObject
+        def initialize(buffer)
+          @buffer = buffer
         end
-        private :legacy_loose_object?
+
+        def lazy_source
+          check_buffer_size(@buffer)
+          content = Zlib::Inflate.inflate(@buffer)
+          header, content = content.split(/\0/, 2)
+          if !header || !content
+            raise LooseObjectError, "invalid object header"
+          end
+          type, size = header.split(/ /, 2)
+          if !%w(blob tree commit tag).include?(type) || size !~ /^\d+$/
+            raise LooseObjectError, "invalid object header"
+          end
+          @buffer = nil
+          check_content_size RawObject.new(type.to_sym, content, size.to_i)
+        end
       end
     end
   end
