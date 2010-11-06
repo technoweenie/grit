@@ -20,6 +20,8 @@ module Grit
       end
 
       class LooseStorage
+        VALID_OBJECTS = %w(blob tree commit tag)
+
         def initialize(directory)
           @directory = directory
         end
@@ -47,8 +49,8 @@ module Grit
               raise LooseObjectError, "invalid object header"
             end
             type, size = header.split(/ /, 2)
-            if !%w(blob tree commit tag).include?(type) || size !~ /^\d+$/
-              raise LooseObjectError, "invalid object header"
+            if !VALID_OBJECTS.include?(type) || size !~ /^\d+$/
+              raise LooseObjectError, "invalid object header: #{header.inspect}"
             end
             type = type.to_sym
             size = size.to_i
@@ -158,8 +160,6 @@ module Grit
           end
         end
 
-        VALID_OBJECTS = %w(blob tree commit tag)
-
         # Creates a valid header for Git loose objects.
         #
         # type    - A String specifying the object's type: 
@@ -196,11 +196,11 @@ module Grit
             size += (c & 0x7f) << shift
             shift += 7
           end
-          type = OBJ_TYPES[type]
-          if ![:blob, :tree, :commit, :tag].include?(type)
-            raise LooseObjectError, "invalid loose object type"
+          type_sym = OBJ_TYPES[type]
+          if !VALID_OBJECTS.include?(type_sym.to_s)
+            raise LooseObjectError, "invalid loose object type: #{type.inspect}"
           end
-          return [type, size, used]
+          return [type_sym, size, used]
         end
         private :unpack_object_header_gently
 
