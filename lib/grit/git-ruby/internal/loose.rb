@@ -60,23 +60,31 @@ module Grit
           return RawObject.new(type, content)
         end
 
-        # currently, I'm using the legacy format because it's easier to do
-        # this function takes content and a type and writes out the loose object and returns a sha
+        # Writes a Git object to disk, using the SHA1 of the content as the 
+        # filename.  This uses the legacy format for Git objects.
+        #
+        # content - The object's content as a String.
+        # type    - A String specifying the object's type: 
+        #           "blob", "tree", "commit", or "tag"
+        #
+        # Returns a String SHA1 of the Git object, which is also the filename.
         def put_raw_object(content, type)
           size = content.length.to_s
           LooseStorage.verify_header(type, size)
 
-          header = "#{type} #{size}\0"
-          store = header + content
+          store = "#{self.class.make_header(type, size)}#{content}"
 
-          sha1 = Digest::SHA1.hexdigest(store)
-          path = @directory+'/'+sha1[0...2]+'/'+sha1[2..40]
+          sha1   = Digest::SHA1.hexdigest(store)
+          prefix = sha1[0...2]
+          suffix = sha1[2..40]
+          path   = "#{@directory}/#{prefix}"
+          full   = "#{path}/#{suffix}"
 
-          if !File.exists?(path)
+          if !File.exists?(full)
             content = Zlib::Deflate.deflate(store)
 
-            FileUtils.mkdir_p(@directory+'/'+sha1[0...2])
-            File.open(path, 'wb') do |f|
+            FileUtils.mkdir_p(path)
+            File.open(full, 'wb') do |f|
               f.write content
             end
           end
@@ -87,15 +95,19 @@ module Grit
         def self.calculate_sha(content, type)
           size = content.length.to_s
           verify_header(type, size)
-          header = "#{type} #{size}\0"
-          store = header + content
+          store = "#{make_header(type, size)}#{content}"
 
           Digest::SHA1.hexdigest(store)
         end
 
+        def self.make_header(type, size)
+          "#{type} #{size}\0"
+        end
+
+        VALID_OBJECTS = %w(blob tree commit tag)
         def self.verify_header(type, size)
-          if !%w(blob tree commit tag).include?(type) || size !~ /^\d+$/
-            raise LooseObjectError, "invalid object header"
+          if !VALID_OBJECTS.include?(type) || size !~ /^\d+$/
+            raise LooseObjectError, "invalid object header: #{make_header(type, size).inspect}"
           end
         end
 
