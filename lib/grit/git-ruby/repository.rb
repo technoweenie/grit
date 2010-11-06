@@ -108,8 +108,8 @@ module Grit
       end
 
       # writes a raw object into the git repo
-      def put_raw_object(content, type)
-        loose.first.put_raw_object(content, type)
+      def put_raw_object(content, type, size = nil)
+        loose.first.put_raw_object(content, type, size)
       end
 
       # returns true or false if that sha exists in the db

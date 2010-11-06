@@ -19,8 +19,8 @@ module Grit
       File.exist?(self.git_dir)
     end
 
-    def put_raw_object(content, type)
-      ruby_git.put_raw_object(content, type)
+    def put_raw_object(content, type, size = nil)
+      ruby_git.put_raw_object(content, type, size)
     end
 
     def object_exists?(object_id)

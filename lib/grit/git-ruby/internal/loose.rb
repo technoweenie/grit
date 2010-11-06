@@ -60,54 +60,120 @@ module Grit
           return RawObject.new(type, content)
         end
 
-        # Writes a Git object to disk, using the SHA1 of the content as the 
-        # filename.  This uses the legacy format for Git objects.
+        # Public: Writes a Git object to disk, using the SHA1 of the content 
+        # as the filename.  This uses the legacy format for Git objects.
         #
-        # content - The object's content as a String.
+        # content - The object's content as a String or IO object.
         # type    - A String specifying the object's type: 
         #           "blob", "tree", "commit", or "tag"
+        # size    - Optional Fixnum size of the content.  If not given, read
+        #           the content to get the size.
         #
         # Returns a String SHA1 of the Git object, which is also the filename.
-        def put_raw_object(content, type)
-          size = content.length.to_s
-          LooseStorage.verify_header(type, size)
+        def put_raw_object(content, type, size = nil)
+          self.class.calculate_header(content, type, size) do |sha, size, io, header|
+            prefix = sha[0...2]
+            suffix = sha[2..40]
+            path   = "#{@directory}/#{prefix}"
+            full   = "#{path}/#{suffix}"
 
-          store = "#{self.class.make_header(type, size)}#{content}"
-
-          sha1   = Digest::SHA1.hexdigest(store)
-          prefix = sha1[0...2]
-          suffix = sha1[2..40]
-          path   = "#{@directory}/#{prefix}"
-          full   = "#{path}/#{suffix}"
-
-          if !File.exists?(full)
-            content = Zlib::Deflate.deflate(store)
-
+            return sha if File.exists?(full)
             FileUtils.mkdir_p(path)
-            File.open(full, 'wb') do |f|
-              f.write content
+            File.open(full, 'wb') do |f| 
+              zip = Zlib::Deflate.new
+              f << zip.deflate(header)
+              while data = io.read(4096)
+                f << zip.deflate(data)
+              end
+              f << zip.finish
+              zip.close
             end
+
+            sha
           end
-          return sha1
         end
 
-        # simply figure out the sha
-        def self.calculate_sha(content, type)
-          size = content.length.to_s
-          verify_header(type, size)
-          store = "#{make_header(type, size)}#{content}"
+        # Generates the Git object's header for the loose format, as well
+        # as the SHA of the loose object.
+        #
+        # content - The object's content as an IO object.
+        # type    - A String specifying the object's type: 
+        #           "blob", "tree", "commit", or "tag"
+        # size    - Fixnum size of the content.
+        #
+        # Yields the String SHA, the content size, the content IO instance,
+        # and the String header if a block is given.
+        # Returns the block's output if a block is given, or a Hash of the 
+        # block's contents.
+        def self.calculate_header(content, type, size = nil)
+          if !content.respond_to?(:read)
+            content = StringIO.new(content.to_s)
+          end
 
-          Digest::SHA1.hexdigest(store)
+          size ||= get_content_size(content)
+          head   = verify_header(type, size.to_s)
+
+          sha = Digest::SHA1.new
+          sha << head
+          while data = content.read(4096)
+            sha << data
+          end
+          content.rewind
+
+          if block_given?
+            yield sha.hexdigest, size, content, head
+          else
+            {:size => size, :sha => sha.hexdigest, :header => head, 
+              :content => content}
+          end
         end
 
-        def self.make_header(type, size)
-          "#{type} #{size}\0"
+        # Calculates the Git object's header and returns the sha.
+        #
+        # content - The object's content as an IO object.
+        # type    - A String specifying the object's type: 
+        #           "blob", "tree", "commit", or "tag"
+        # size    - Fixnum size of the content.
+        #
+        # Returns the String SHA of the Git loose object.
+        def self.calculate_sha(content, type, size = nil)
+          calculate_header { |_, sha| sha }
+        end
+
+        # Gets the size of the given content by counting the bytes.
+        #
+        # content - The object's content as an IO object.
+        #
+        # Returns the Fixnum size of the content.
+        def self.get_content_size(content)
+          if content.respond_to?(:size)
+            content.size
+          else
+            size = 0
+            while data = content.read(4096)
+              size += data.size
+            end
+            content.rewind
+            size
+          end
         end
 
         VALID_OBJECTS = %w(blob tree commit tag)
+
+        # Creates a valid header for Git loose objects.
+        #
+        # type    - A String specifying the object's type: 
+        #           "blob", "tree", "commit", or "tag"
+        # size    - Fixnum size of the content.
+        #
+        # Raises LooseObjectError if the header is invalid.
+        # Returns a String if the header data is valid.
         def self.verify_header(type, size)
-          if !VALID_OBJECTS.include?(type) || size !~ /^\d+$/
-            raise LooseObjectError, "invalid object header: #{make_header(type, size).inspect}"
+          header = "#{type} #{size}\0"
+          if VALID_OBJECTS.include?(type) && size =~ /^\d+$/
+            header
+          else
+            raise LooseObjectError, "invalid object header: #{header.inspect}"
           end
         end
 
