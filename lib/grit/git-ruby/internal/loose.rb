@@ -82,7 +82,7 @@ module Grit
             File.open(full, 'wb') do |f| 
               zip = Zlib::Deflate.new
               f << zip.deflate(header)
-              while data = io.read(4096)
+              while data = io.read(8192)
                 f << zip.deflate(data)
               end
               f << zip.finish
@@ -115,7 +115,7 @@ module Grit
 
           sha = Digest::SHA1.new
           sha << head
-          while data = content.read(4096)
+          while data = content.read(8192)
             sha << data
           end
           content.rewind
@@ -150,7 +150,7 @@ module Grit
             content.size
           else
             size = 0
-            while data = content.read(4096)
+            while data = content.read(8192)
               size += data.size
             end
             content.rewind
