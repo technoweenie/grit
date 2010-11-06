@@ -80,6 +80,7 @@ module Grit
             full   = "#{path}/#{suffix}"
 
             return sha if File.exists?(full)
+
             FileUtils.mkdir_p(path)
             File.open(full, 'wb') do |f| 
               zip = Zlib::Deflate.new
@@ -128,6 +129,8 @@ module Grit
             {:size => size, :sha => sha.hexdigest, :header => head, 
               :content => content}
           end
+        ensure
+          content.close
         end
 
         # Calculates the Git object's header and returns the sha.
